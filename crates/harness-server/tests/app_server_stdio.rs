@@ -723,6 +723,104 @@ fn fake_amp_blocks_mode_accepts_user_blocks_by_default() {
 }
 
 #[test]
+fn fake_claude_blocks_mode_passes_the_thread_key_to_a_warm_sandbox_harness() {
+    // A warm-pool sandbox boots without CENTAUR_THREAD_KEY; the harness (and
+    // the tools it runs) must get the key from the first input line.
+    let env_log = temp_path("fake-claude-thread-key.log");
+    let fake_claude = format!(
+        "printf '%s\\n' \"${{CENTAUR_THREAD_KEY:-unset}}\" > {log}; {reply}",
+        log = shell_quote(env_log.as_path()),
+        reply = concat!(
+            "printf '%s\\n' ",
+            "'{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-session\"}' ",
+            "'{\"type\":\"assistant\",\"is_partial\":false,\"message\":{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}' ",
+            "'{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}'"
+        )
+    );
+
+    let run = run_blocks_turn(BridgeTurnConfig {
+        harness: Harness::ClaudeCode,
+        command_override: Some(fake_claude),
+        prompt: "where am I".to_string(),
+        timeout: Duration::from_secs(10),
+    });
+
+    assert_completed_turn(&run.turn);
+    let thread_key = std::fs::read_to_string(&env_log).expect("read thread key log");
+    assert_eq!(thread_key.trim(), "slack:C123:123.456");
+    let _ = std::fs::remove_file(env_log);
+}
+
+#[test]
+fn fake_claude_blocks_mode_keeps_the_thread_key_set_on_the_sandbox() {
+    let env_log = temp_path("fake-claude-pod-thread-key.log");
+    let fake_claude = format!(
+        "printf '%s\\n' \"${{CENTAUR_THREAD_KEY:-unset}}\" > {log}; {reply}",
+        log = shell_quote(env_log.as_path()),
+        reply = concat!(
+            "printf '%s\\n' ",
+            "'{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-session\"}' ",
+            "'{\"type\":\"assistant\",\"is_partial\":false,\"message\":{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}' ",
+            "'{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}'"
+        )
+    );
+
+    let mut bridge = BridgeProcess::spawn_harness_blocks(
+        Harness::ClaudeCode,
+        Some(fake_claude),
+        Some(("CENTAUR_THREAD_KEY", "slack:C999:999.999")),
+    );
+    let turn = bridge.run_blocks_user_turn("where am I", Duration::from_secs(10));
+    bridge.finish_successfully();
+
+    assert_completed_turn(&turn);
+    let thread_key = std::fs::read_to_string(&env_log).expect("read thread key log");
+    assert_eq!(thread_key.trim(), "slack:C999:999.999");
+    let _ = std::fs::remove_file(env_log);
+}
+
+#[test]
+fn fake_codex_blocks_mode_passes_the_thread_key_to_a_warm_sandbox_app_server() {
+    let fake_codex = temp_path("fake-codex.sh");
+    let fake_codex_log = temp_path("fake-codex-requests.jsonl");
+    let wrapper = temp_path("fake-codex-env.sh");
+    let env_log = temp_path("fake-codex-thread-key.log");
+    std::fs::write(&fake_codex, fake_codex_app_server_script(&fake_codex_log))
+        .expect("write fake codex script");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nif [ \"${{2:-}}\" = --listen ]; then printf '%s\\n' \"${{CENTAUR_THREAD_KEY:-unset}}\" > {log}; fi\nexec {codex} \"$@\"\n",
+            log = shell_quote(env_log.as_path()),
+            codex = shell_quote(fake_codex.as_path()),
+        ),
+    )
+    .expect("write fake codex wrapper");
+    for path in [&fake_codex, &wrapper] {
+        let mut permissions = std::fs::metadata(path)
+            .expect("fake codex metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("chmod fake codex script");
+    }
+
+    let mut bridge = BridgeProcess::spawn_harness_blocks(
+        Harness::Codex,
+        None,
+        Some(("CODEX_BIN", wrapper.to_str().expect("utf-8 wrapper path"))),
+    );
+    let turn = bridge.run_blocks_user_turn("where am I", Duration::from_secs(10));
+    bridge.finish_successfully();
+
+    assert_completed_turn(&turn);
+    let thread_key = std::fs::read_to_string(&env_log).expect("read thread key log");
+    assert_eq!(thread_key.trim(), "slack:C123:123.456");
+    for path in [fake_codex, fake_codex_log, wrapper, env_log] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
 fn fake_claude_blocks_mode_interrupts_back_to_back_stop() {
     let fake_claude = concat!(
         "printf '%s\\n' ",
@@ -1629,6 +1727,7 @@ impl BridgeProcess {
         for env_key in [
             "CENTAUR_CLAUDE_APP_BRIDGE_COMMAND",
             "CENTAUR_AMP_APP_BRIDGE_COMMAND",
+            "CENTAUR_THREAD_KEY",
             "CODEX_MODEL",
             "CODEX_MODEL_PROVIDER",
             "FAKE_CODEX_TURN_DELAY",

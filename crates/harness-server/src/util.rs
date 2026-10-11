@@ -21,6 +21,22 @@ pub(crate) fn command_from_override(env_key: &str) -> Option<ProcessCommand> {
     Some(command)
 }
 
+/// Where tool shims and `centaur_sdk` read the session's thread key.
+const THREAD_KEY_ENV: &str = "CENTAUR_THREAD_KEY";
+
+/// Pass the input line's thread key to a harness process when the sandbox was
+/// started without one. api-rs sets `CENTAUR_THREAD_KEY` only on a sandbox it
+/// creates for a thread; a warm-pool sandbox boots before it is claimed and
+/// first learns its thread from the input line. A key set on the pod wins.
+pub(crate) fn pass_thread_key(command: &mut ProcessCommand, thread_key: Option<&str>) {
+    if env::var_os(THREAD_KEY_ENV).is_some_and(|value| !value.is_empty()) {
+        return;
+    }
+    if let Some(thread_key) = thread_key.filter(|key| !key.trim().is_empty()) {
+        command.env(THREAD_KEY_ENV, thread_key);
+    }
+}
+
 pub(crate) fn user_input_to_anthropic_content(input: &[UserInput]) -> Vec<Value> {
     input
         .iter()

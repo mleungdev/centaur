@@ -40,7 +40,7 @@ use crate::traits::{
 use crate::turn::{BridgeConfig, CodexTurnNormalizer};
 use crate::util::write_value;
 use crate::wire::notification_to_wire_value;
-use crate::{HarnessServerError, Result};
+use crate::{HarnessServerError, Result, pass_thread_key};
 
 /// Gateway startup + RPC response budget. Generous because a cold Hermes
 /// start imports its agent stack and may run MCP discovery first.
@@ -92,10 +92,11 @@ pub fn run_hermes_blocks_server() -> Result<()> {
                 model,
                 provider: _,
                 reasoning,
-                trace_context: _,
+                trace_context,
             }) => {
                 turn += 1;
-                let result = ensure_child(&mut hermes, model).and_then(|child| {
+                let thread_key = trace_context.thread_key.as_deref();
+                let result = ensure_child(&mut hermes, model, thread_key).and_then(|child| {
                     run_hermes_turn(
                         child,
                         &mut stdout,
@@ -133,12 +134,13 @@ pub fn run_hermes_blocks_server() -> Result<()> {
     Ok(())
 }
 
-fn ensure_child(
-    hermes: &mut Option<HermesChild>,
+fn ensure_child<'a>(
+    hermes: &'a mut Option<HermesChild>,
     model: Option<String>,
-) -> Result<&mut HermesChild> {
+    thread_key: Option<&str>,
+) -> Result<&'a mut HermesChild> {
     if hermes.is_none() {
-        *hermes = Some(HermesChild::start(model)?);
+        *hermes = Some(HermesChild::start(model, thread_key)?);
     }
     Ok(hermes.as_mut().expect("hermes started"))
 }
@@ -192,11 +194,13 @@ impl Drop for HermesChild {
 }
 
 impl HermesChild {
-    fn start(model: Option<String>) -> Result<Self> {
+    fn start(model: Option<String>, thread_key: Option<&str>) -> Result<Self> {
         // The JSON-RPC gateway is a Python module, not a `hermes` subcommand;
         // HERMES_PYTHON points at the interpreter whose env has hermes-agent.
         let python = env::var("HERMES_PYTHON").unwrap_or_else(|_| "python3".to_string());
-        let mut child = ProcessCommand::new(python)
+        let mut command = ProcessCommand::new(python);
+        pass_thread_key(&mut command, thread_key);
+        let mut child = command
             .args(["-m", "tui_gateway.entry"])
             .env("HERMES_QUIET", "1")
             // Centaur owns approval policy at the sandbox boundary (isolated

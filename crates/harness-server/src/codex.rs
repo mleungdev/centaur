@@ -19,7 +19,7 @@ use crate::server::{
     BlocksCommand, BlocksState, parse_blocks_line_with_state, usage_span_input_value,
     write_blocks_error,
 };
-use crate::{AppServerRuntime, HarnessServerError, Result};
+use crate::{AppServerRuntime, HarnessServerError, Result, pass_thread_key};
 
 mod citations;
 
@@ -242,7 +242,8 @@ pub(crate) fn run_codex_blocks_server(config: CodexHarnessServer) -> Result<()> 
                 turn_active.store(true, Ordering::SeqCst);
                 let result = (|| -> Result<()> {
                     if codex.is_none() {
-                        let mut child = CodexJsonRpcChild::spawn()?;
+                        let mut child =
+                            CodexJsonRpcChild::spawn(trace_context.thread_key.as_deref())?;
                         initialize_codex(
                             &mut child,
                             &mut stdout,
@@ -551,9 +552,11 @@ struct CodexJsonRpcChild {
 }
 
 impl CodexJsonRpcChild {
-    fn spawn() -> Result<Self> {
+    fn spawn(thread_key: Option<&str>) -> Result<Self> {
         let bin = codex_bin();
-        let mut child = ProcessCommand::new(&bin)
+        let mut command = ProcessCommand::new(&bin);
+        pass_thread_key(&mut command, thread_key);
+        let mut child = command
             .args(["app-server", "--listen", "stdio://"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

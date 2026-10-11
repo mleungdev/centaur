@@ -39,7 +39,7 @@ use crate::traits::{
 use crate::turn::{BridgeConfig, CodexTurnNormalizer};
 use crate::util::{absolute_path, default_codex_home, write_value};
 use crate::wire::{is_known_untyped_server_notification, notification_to_wire_value};
-use crate::{HarnessServerError, Result};
+use crate::{HarnessServerError, Result, pass_thread_key};
 
 pub fn server_for(kind: HarnessKind) -> Box<dyn AppServerRuntime> {
     match kind {
@@ -1510,6 +1510,7 @@ fn ensure_harness_process<H: HarnessServer>(harness: &H, state: &mut ThreadState
     state.process = None;
 
     let mut command = harness.command_for_turn(state);
+    pass_thread_key(&mut command, state.thread_key.as_deref());
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
