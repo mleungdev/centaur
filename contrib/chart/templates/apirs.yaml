@@ -351,6 +351,22 @@ spec:
             - name: SESSION_TITLES_ENABLED
               value: {{ .Values.apiRs.sessionTitles.enabled | quote }}
 {{- end }}
+{{- with .Values.apiRs.sessionTitles.provider }}
+            - name: SESSION_TITLE_PROVIDER
+              value: {{ . | quote }}
+{{- end }}
+{{- with .Values.apiRs.sessionTitles.model }}
+            - name: SESSION_TITLE_MODEL
+              value: {{ . | quote }}
+{{- end }}
+{{- with .Values.apiRs.sessionTitles.baseUrl }}
+            - name: SESSION_TITLE_BASE_URL
+              value: {{ . | quote }}
+{{- end }}
+{{- with .Values.apiRs.sessionTitles.apiKeyEnv }}
+            - name: SESSION_TITLE_API_KEY_ENV
+              value: {{ . | quote }}
+{{- end }}
             - name: SESSION_ACTIVITY_SUMMARY_ENABLED
               value: {{ .Values.apiRs.activitySummary.enabled | quote }}
 {{- if .Values.apiRs.activitySummary.enabled }}

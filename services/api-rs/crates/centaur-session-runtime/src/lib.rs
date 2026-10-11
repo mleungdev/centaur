@@ -55,7 +55,7 @@ pub use cleanup::SessionSandboxCleanupConfig;
 pub use retention::SessionEventRetentionConfig;
 pub use title_generator::SessionTitleGenerationError;
 use title_generator::{
-    OpenAiSessionTitleGenerator, sanitize_session_title, session_title_source_from_parts,
+    HttpSessionTitleGenerator, sanitize_session_title, session_title_source_from_parts,
 };
 
 pub const SESSION_OUTPUT_LINE_EVENT: &str = "session.output.line";
@@ -783,7 +783,7 @@ impl SessionRuntime {
     }
 
     pub fn with_openai_session_title_generator_from_env(mut self) -> Self {
-        let Some(generator) = OpenAiSessionTitleGenerator::from_env() else {
+        let Some(generator) = HttpSessionTitleGenerator::from_env() else {
             return self;
         };
         self.session_title_generator = Some(Arc::new(move |source| {

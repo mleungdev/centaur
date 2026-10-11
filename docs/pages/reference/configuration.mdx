@@ -136,8 +136,12 @@ Sandbox lifecycle:
 | `apiRs.sandboxReapIntervalSecs` / `SESSION_SANDBOX_REAP_INTERVAL_SECS` | Helm value, default `300`. | How often api-rs sweeps observed sandboxes for max-lifetime expiry and orphaned proxy resources. |
 | `apiRs.sandboxOrphanSweepGraceSecs` / `SESSION_SANDBOX_ORPHAN_SWEEP_GRACE_SECS` | Helm value, default `600`. | Minimum age of an iron-proxy resource with no live Sandbox before the orphan sweep may delete it. |
 | `apiRs.activitySummary.reasoningEffort` / `SESSION_ACTIVITY_SUMMARY_REASONING_EFFORT` | Helm value, default `low`. | Reasoning effort sent with the activity-summary call. The output budget is small, so a server that resolves an absent effort to its highest level spends the whole budget reasoning and returns an `incomplete` response with no message. Set empty to omit the parameter for a server that rejects it. |
-| `apiRs.sessionTitles.enabled` / `SESSION_TITLES_ENABLED` | Helm value, default `true`. | Generated session titles run whenever api-rs has `OPENAI_API_KEY`. `false` turns them off even when the key is present. |
-| `SESSION_TITLE_REASONING_EFFORT` | Env on api-rs, default `low`. | The same, for the session-title call, whose budget is 24 output tokens. Set empty to omit the parameter. |
+| `apiRs.sessionTitles.enabled` / `SESSION_TITLES_ENABLED` | Helm value, default `true`. | Generated session titles run whenever api-rs has the provider's key. `false` turns them off even when the key is present. |
+| `apiRs.sessionTitles.provider` / `SESSION_TITLE_PROVIDER` | Helm value, default `openai`. | `openai` calls the Responses API; `anthropic` calls the Anthropic Messages API (`/v1/messages`). |
+| `apiRs.sessionTitles.model` / `SESSION_TITLE_MODEL` | Helm value; default `gpt-5.4-nano` (openai) or `claude-haiku-5-5` (anthropic). | Model for the session-title call. |
+| `apiRs.sessionTitles.baseUrl` / `SESSION_TITLE_BASE_URL` | Helm value; default `OPENAI_BASE_URL` (openai) or `https://api.anthropic.com/v1` (anthropic). | API base URL for session titles only. Codex and activity summaries keep `OPENAI_BASE_URL`. |
+| `apiRs.sessionTitles.apiKeyEnv` / `SESSION_TITLE_API_KEY_ENV` | Helm value; default `OPENAI_API_KEY` (openai) or `ANTHROPIC_API_KEY` (anthropic). | Name of the api-rs env var holding the session-title key, for example from the api-rs Secret. If it is unset, titles are off. |
+| `SESSION_TITLE_REASONING_EFFORT` | Env on api-rs, default `low`. | The same, for the session-title call, whose OpenAI budget is 24 output tokens. Sent as `output_config.effort` for `anthropic`. Set empty to omit the parameter. |
 
 There is no separate suspended-only delete timer. Pausing is controlled by the
 per-execution idle timeout; deletion is controlled by sandbox max lifetime.

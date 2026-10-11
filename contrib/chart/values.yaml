@@ -666,10 +666,20 @@ apiRs:
   # idle_timeout_ms. 0 disables the corresponding arm.
   sandboxCleanupIntervalSecs: 300
   sandboxIdleCleanupBackstopSecs: 21600 # 6 hours
-  # Generated session titles. They run whenever api-rs has OPENAI_API_KEY;
-  # enabled: false turns them off even when the key is present.
+  # Generated session titles. They run whenever api-rs has the provider's key;
+  # enabled: false turns them off even when the key is present. Empty fields
+  # keep the provider defaults:
+  #   provider: openai (default) or anthropic
+  #   model: gpt-5.4-nano (openai) or claude-haiku-5-5 (anthropic)
+  #   baseUrl: OPENAI_BASE_URL (openai) or https://api.anthropic.com/v1
+  #   apiKeyEnv: name of the env var holding the key; OPENAI_API_KEY (openai)
+  #     or ANTHROPIC_API_KEY (anthropic)
   sessionTitles:
     enabled: true
+    provider: ""
+    model: ""
+    baseUrl: ""
+    apiKeyEnv: ""
   activitySummary:
     enabled: false
     model: gpt-5.4-nano
