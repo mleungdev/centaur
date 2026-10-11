@@ -1279,6 +1279,7 @@ A role is a reusable bundle of [grants](#grants) and Slack channel permissions. 
 | `foreign_id` | optional    | Globally unique. Immutable. Handy for idempotent provisioning. |
 | `name`       | optional    | |
 | `labels`     | optional    | |
+| `assign_by_default` | optional | Defaults to `false`. When `true`, the role is one of the system [default roles](#principals) given to principals created later; existing principals are not changed. Same setting as Default Roles in System Settings. |
 | `slack_channel_permissions` | optional | Full replacement when present on create or update. Each row accepts `channel_id` and the `upload_enabled`, `download_enabled`, and `history_enabled` flags. |
 
 ### Operations
@@ -1298,6 +1299,7 @@ Returns `201`:
     "foreign_id": "infra",
     "name": "Infra",
     "labels": { "kind": "shared" },
+    "assign_by_default": false,
     "slack_channel_permissions": [],
     "created_at": "2026-06-01T10:00:00Z",
     "updated_at": "2026-06-01T10:00:00Z"
@@ -1312,7 +1314,7 @@ Returns `201`:
 | `GET`    | `/api/v1/roles/lookup/:foreign_id` | Fetch by foreign id. `404` if missing. |
 | `GET`    | `/api/v1/roles/:role_id/grants` | [List the grants](#list-by-grantee) attached to the role. |
 | `POST`   | `/api/v1/roles/:id/slack_channel_permissions` | Idempotently create or update one role-owned Slack channel permission without replacing other rows. Omitted flags default to enabled on create and remain unchanged on update. |
-| `PUT`/`PATCH` | `/api/v1/roles/:id` | [Upsert](#upsert-put--patch) by OID or `foreign_id`. `name`, `labels`, and `slack_channel_permissions` are mutable on an existing record; `foreign_id` applies only when creating. |
+| `PUT`/`PATCH` | `/api/v1/roles/:id` | [Upsert](#upsert-put--patch) by OID or `foreign_id`. `name`, `labels`, `assign_by_default`, and `slack_channel_permissions` are mutable on an existing record; `foreign_id` applies only when creating. |
 | `DELETE` | `/api/v1/roles/:id` | Delete. Returns `204`. Cascades: the role's grants and its assignments are removed. |
 
 ### Role assignments

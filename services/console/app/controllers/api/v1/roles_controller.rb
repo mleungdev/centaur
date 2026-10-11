@@ -21,7 +21,7 @@ module Api
       def create
         role = Role.new(foreign_id: data_params[:foreign_id], created_by: current_user)
         ActiveRecord::Base.transaction do
-          role.assign_attributes(data_params.permit(:name, labels: {}))
+          role.assign_attributes(data_params.permit(:name, :assign_by_default, labels: {}))
           role.save!
           replace_slack_channel_permissions!(role) if data_params.key?(:slack_channel_permissions)
         end
@@ -36,7 +36,7 @@ module Api
         role = resolve_for_upsert(Role)
         was_new = role.new_record?
         ActiveRecord::Base.transaction do
-          role.assign_attributes(data_params.permit(:name, labels: {}))
+          role.assign_attributes(data_params.permit(:name, :assign_by_default, labels: {}))
           role.save!
           replace_slack_channel_permissions!(role) if data_params.key?(:slack_channel_permissions)
         end
@@ -59,6 +59,7 @@ module Api
           foreign_id: role.foreign_id,
           name: role.name,
           labels: role.labels,
+          assign_by_default: role.assign_by_default,
           slack_channel_permissions: role.slack_channel_permissions_payload,
           created_at: role.created_at,
           updated_at: role.updated_at

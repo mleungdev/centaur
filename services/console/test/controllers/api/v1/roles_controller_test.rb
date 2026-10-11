@@ -96,6 +96,39 @@ module Api
         assert_equal({ "tier" => "base" }, role.labels)
       end
 
+      test "PUT makes a role a default for principals created afterwards" do
+        Role.update_all(assign_by_default: false)
+        role = roles(:acme_infra)
+
+        put api_v1_role_url(id: role.foreign_id),
+            params: { data: { assign_by_default: true } }.to_json,
+            headers: auth_headers
+        assert_response :ok
+        assert_equal true, json_body.dig("data", "assign_by_default")
+
+        post api_v1_principals_url,
+             params: { data: { foreign_id: "U-after-default-role" } }.to_json,
+             headers: auth_headers
+        assert_response :created
+        assert_equal [ role ], Principal.find_by!(foreign_id: "U-after-default-role").roles.to_a
+      end
+
+      test "PUT leaves assign_by_default unchanged when omitted" do
+        role = roles(:acme_infra)
+        role.update!(assign_by_default: true)
+
+        put api_v1_role_url(id: role.oid), params: { data: { name: "Renamed" } }.to_json, headers: auth_headers
+        assert_response :ok
+        assert_predicate role.reload, :assign_by_default?
+
+        put api_v1_role_url(id: role.oid),
+            params: { data: { assign_by_default: false } }.to_json,
+            headers: auth_headers
+        assert_response :ok
+        assert_not role.reload.assign_by_default?
+        assert_equal false, json_body.dig("data", "assign_by_default")
+      end
+
       test "PUT replaces role Slack channel permissions when present" do
         role = roles(:acme_infra)
         role.slack_channel_permissions.create!(
