@@ -8,6 +8,7 @@ const SESSION_TITLE_MAX_SOURCE_CHARS: usize = 4_000;
 const SESSION_TITLE_MAX_CHARS: usize = 80;
 const SESSION_TITLE_REQUEST_TIMEOUT: Duration = Duration::from_secs(4);
 const SESSION_TITLE_REASONING_EFFORT_ENV: &str = "SESSION_TITLE_REASONING_EFFORT";
+const SESSION_TITLES_ENABLED_ENV: &str = "SESSION_TITLES_ENABLED";
 /// A five-word commit-style title needs no deliberation, and the request only
 /// budgets 24 output tokens. Servers that resolve an absent effort to their
 /// highest level spend the whole budget reasoning and return no message, so an
@@ -25,6 +26,9 @@ pub(crate) struct OpenAiSessionTitleGenerator {
 
 impl OpenAiSessionTitleGenerator {
     pub(crate) fn from_env() -> Option<Self> {
+        if !session_titles_enabled(env::var(SESSION_TITLES_ENABLED_ENV).ok().as_deref()) {
+            return None;
+        }
         let api_key = env::var("OPENAI_API_KEY").ok()?;
         let api_key = api_key.trim();
         if api_key.is_empty() || api_key == "OPENAI_API_KEY" {
@@ -72,6 +76,17 @@ impl OpenAiSessionTitleGenerator {
         }
         openai_response_output_text(&text).ok_or(SessionTitleGenerationError::MissingOutput)
     }
+}
+
+/// Titles are on unless explicitly turned off. This lets a deployment that has
+/// `OPENAI_API_KEY` for Codex keep titles off.
+fn session_titles_enabled(configured: Option<&str>) -> bool {
+    !matches!(
+        configured
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("false" | "0" | "no" | "off")
+    )
 }
 
 /// Reasoning effort for the title call. An empty value omits the parameter,
@@ -487,6 +502,15 @@ mod tests {
             resolve_reasoning_effort(None).as_deref(),
             Some(DEFAULT_SESSION_TITLE_REASONING_EFFORT)
         );
+    }
+
+    #[test]
+    fn session_titles_default_on_and_can_be_turned_off() {
+        assert!(session_titles_enabled(None));
+        assert!(session_titles_enabled(Some("true")));
+        for off in ["false", "0", "OFF", " no "] {
+            assert!(!session_titles_enabled(Some(off)), "{off:?}");
+        }
     }
 
     /// Empty is the escape hatch for a server that rejects the field outright.

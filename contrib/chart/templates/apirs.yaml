@@ -347,6 +347,10 @@ spec:
               value: {{ .Values.apiRs.sandboxCleanupIntervalSecs | quote }}
             - name: SESSION_SANDBOX_IDLE_CLEANUP_BACKSTOP_SECS
               value: {{ .Values.apiRs.sandboxIdleCleanupBackstopSecs | quote }}
+{{- if not (hasKey .Values.apiRs.extraEnv "SESSION_TITLES_ENABLED") }}
+            - name: SESSION_TITLES_ENABLED
+              value: {{ .Values.apiRs.sessionTitles.enabled | quote }}
+{{- end }}
             - name: SESSION_ACTIVITY_SUMMARY_ENABLED
               value: {{ .Values.apiRs.activitySummary.enabled | quote }}
 {{- if .Values.apiRs.activitySummary.enabled }}

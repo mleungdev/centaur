@@ -666,6 +666,10 @@ apiRs:
   # idle_timeout_ms. 0 disables the corresponding arm.
   sandboxCleanupIntervalSecs: 300
   sandboxIdleCleanupBackstopSecs: 21600 # 6 hours
+  # Generated session titles. They run whenever api-rs has OPENAI_API_KEY;
+  # enabled: false turns them off even when the key is present.
+  sessionTitles:
+    enabled: true
   activitySummary:
     enabled: false
     model: gpt-5.4-nano
