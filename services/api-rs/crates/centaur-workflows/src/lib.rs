@@ -33,6 +33,7 @@ use time::OffsetDateTime;
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     process::Command,
+    sync::mpsc,
     task::JoinHandle,
 };
 use tracing::{info, warn};
@@ -121,7 +122,12 @@ struct WorkflowRuntimeInner {
     _schedule_worker: Worker,
     webhook_registry: Arc<RwLock<BTreeMap<String, RegisteredWorkflowWebhook>>>,
     schedule_registry: Arc<RwLock<BTreeMap<String, RegisteredWorkflowSchedule>>>,
+    starter_registry: Arc<RwLock<WorkflowStarters>>,
 }
+
+/// API caller classes each workflow allows to start it, from
+/// `WORKFLOW_STARTERS`. Workflows without a declaration are absent.
+type WorkflowStarters = BTreeMap<String, BTreeSet<String>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WorkflowEnablement {
@@ -200,6 +206,9 @@ impl WorkflowEnablement {
         });
         metadata
             .principals
+            .retain(|workflow_name, _| self.is_enabled(workflow_name));
+        metadata
+            .starters
             .retain(|workflow_name, _| self.is_enabled(workflow_name));
     }
 }
@@ -307,13 +316,17 @@ impl WorkflowPrincipalRegistrar {
         Self { client }
     }
 
+    /// Resolves each declared principal independently. A workflow whose
+    /// principal cannot be resolved is omitted, so it fails closed when run
+    /// while other workflows and api-rs startup proceed; the periodic
+    /// metadata reconciler retries it.
     async fn register_workflow_principals(
         &self,
         principals: &BTreeMap<String, WorkflowPrincipalDeclaration>,
-    ) -> Result<BTreeMap<String, String>, WorkflowRuntimeError> {
+    ) -> BTreeMap<String, String> {
         let mut registered = BTreeMap::new();
         for (workflow_name, declaration) in principals {
-            let record = match declaration {
+            let result = match declaration {
                 WorkflowPrincipalDeclaration::Managed => {
                     let foreign_id = canonical_workflow_principal_foreign_id(workflow_name);
                     self.client
@@ -327,15 +340,24 @@ impl WorkflowPrincipalRegistrar {
                             slack_team_id: None,
                             slack_email: None,
                         })
-                        .await?
+                        .await
                 }
                 WorkflowPrincipalDeclaration::Existing(reference) => {
-                    self.client.get_principal(reference).await?
+                    self.client.get_principal(reference).await
                 }
             };
-            registered.insert(workflow_name.clone(), record.id);
+            match result {
+                Ok(record) => {
+                    registered.insert(workflow_name.clone(), record.id);
+                }
+                Err(error) => warn!(
+                    workflow_name,
+                    %error,
+                    "failed to resolve workflow principal; workflow runs will fail until it resolves"
+                ),
+            }
         }
-        Ok(registered)
+        registered
     }
 }
 
@@ -634,6 +656,7 @@ impl WorkflowRuntime {
             &discovery,
             &enablement,
         )?));
+        let starter_registry = Arc::new(RwLock::new(discovery.starters.clone()));
 
         let task_session_runtime = session_runtime.clone();
         let task_workflow_host_sandbox = workflow_host_sandbox.clone();
@@ -820,6 +843,7 @@ impl WorkflowRuntime {
                 workflow_clients,
                 webhook_registry.clone(),
                 schedule_registry.clone(),
+                starter_registry.clone(),
                 workflow_host_sandbox.clone(),
                 workflow_principal_registrar,
                 interval,
@@ -839,6 +863,7 @@ impl WorkflowRuntime {
                 _schedule_worker: schedule_worker,
                 webhook_registry,
                 schedule_registry,
+                starter_registry,
             }),
         })
     }
@@ -1098,6 +1123,17 @@ impl WorkflowRuntime {
             .values()
             .cloned()
             .collect()
+    }
+
+    /// API caller classes allowed to start `workflow_name`, or `None` when the
+    /// workflow does not restrict who may start it.
+    pub fn workflow_starters(&self, workflow_name: &str) -> Option<BTreeSet<String>> {
+        self.inner
+            .starter_registry
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(workflow_name.trim())
+            .cloned()
     }
 
     pub fn list_schedules(&self) -> Vec<RegisteredWorkflowSchedule> {
@@ -1739,6 +1775,8 @@ struct PythonWorkflowDiscovery {
     schedule: Option<Value>,
     #[serde(default)]
     principal: Option<PythonWorkflowPrincipal>,
+    #[serde(default)]
+    starters: Option<BTreeSet<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1759,6 +1797,7 @@ struct PythonWorkflowMetadata {
     schedules: Vec<Value>,
     workflow_names: BTreeSet<String>,
     principals: BTreeMap<String, WorkflowPrincipalDeclaration>,
+    starters: WorkflowStarters,
 }
 
 fn metadata_from_discovery_payload(
@@ -1770,6 +1809,11 @@ fn metadata_from_discovery_payload(
             .workflow_names
             .insert(workflow.workflow_name.clone());
         metadata.webhooks.extend(workflow.webhooks);
+        if let Some(starters) = workflow.starters {
+            metadata
+                .starters
+                .insert(workflow.workflow_name.clone(), starters);
+        }
         if let Some(mut schedule) = workflow.schedule {
             if let Some(object) = schedule.as_object_mut() {
                 object
@@ -1826,7 +1870,7 @@ async fn prepare_workflow_host_sandbox(
         discovery,
         enablement,
     )
-    .await?;
+    .await;
     Ok(Some(sandbox))
 }
 
@@ -1835,19 +1879,12 @@ async fn reconcile_workflow_principals(
     registrar: &WorkflowPrincipalRegistrar,
     discovery: &PythonWorkflowMetadata,
     enablement: &WorkflowEnablement,
-) -> Result<(), WorkflowRuntimeError> {
+) {
     let mut principals = discovery.principals.clone();
     principals.retain(|workflow_name, _| enablement.is_enabled(workflow_name));
     let required = principals.keys().cloned().collect();
-    let registered = match registrar.register_workflow_principals(&principals).await {
-        Ok(registered) => registered,
-        Err(error) => {
-            sandbox.update_workflow_principals(BTreeMap::new(), required);
-            return Err(error);
-        }
-    };
+    let registered = registrar.register_workflow_principals(&principals).await;
     sandbox.update_workflow_principals(registered, required);
-    Ok(())
 }
 
 async fn discover_python_workflow_metadata() -> Result<PythonWorkflowMetadata, WorkflowRuntimeError>
@@ -1973,11 +2010,13 @@ fn parse_worker_concurrency(raw: Option<&str>, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_workflow_metadata_reconciler(
     schedule_client: Client,
     workflow_clients: WorkflowQueueClients,
     webhook_registry: Arc<RwLock<BTreeMap<String, RegisteredWorkflowWebhook>>>,
     schedule_registry: Arc<RwLock<BTreeMap<String, RegisteredWorkflowSchedule>>>,
+    starter_registry: Arc<RwLock<WorkflowStarters>>,
     workflow_host_sandbox: Option<WorkflowHostSandboxRuntime>,
     workflow_principal_registrar: WorkflowPrincipalRegistrar,
     interval: Duration,
@@ -1994,6 +2033,7 @@ fn spawn_workflow_metadata_reconciler(
                 &schedule_client,
                 &webhook_registry,
                 &schedule_registry,
+                &starter_registry,
                 workflow_host_sandbox.as_ref(),
                 &workflow_principal_registrar,
             )
@@ -2031,6 +2071,7 @@ async fn reconcile_workflow_metadata_once(
     schedule_client: &Client,
     webhook_registry: &Arc<RwLock<BTreeMap<String, RegisteredWorkflowWebhook>>>,
     schedule_registry: &Arc<RwLock<BTreeMap<String, RegisteredWorkflowSchedule>>>,
+    starter_registry: &Arc<RwLock<WorkflowStarters>>,
     workflow_host_sandbox: Option<&WorkflowHostSandboxRuntime>,
     workflow_principal_registrar: &WorkflowPrincipalRegistrar,
 ) -> Result<
@@ -2051,7 +2092,7 @@ async fn reconcile_workflow_metadata_once(
             &discovery,
             &enablement,
         )
-        .await?;
+        .await;
     }
     {
         let mut webhooks = webhook_registry
@@ -2064,6 +2105,12 @@ async fn reconcile_workflow_metadata_once(
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *schedules = next_schedules.clone();
+    }
+    {
+        let mut starters = starter_registry
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *starters = discovery.starters.clone();
     }
     reconcile_schedules(schedule_client, &next_schedules).await?;
     info!(
@@ -3063,7 +3110,7 @@ async fn run_python_workflow_host_local(
     )
     .await?;
 
-    let mut lines = BufReader::new(stdout).lines();
+    let mut lines = HostStdoutLines::spawn(stdout);
     while let Some(line) = lines.next_line().await? {
         if line.trim().is_empty() {
             continue;
@@ -3201,7 +3248,7 @@ async fn run_python_workflow_host_protocol<W, R>(
 ) -> Result<Value, WorkflowRuntimeError>
 where
     W: AsyncWrite + Unpin,
-    R: AsyncRead + Unpin,
+    R: AsyncRead + Send + Unpin + 'static,
 {
     write_host_message(
         stdin,
@@ -3215,7 +3262,7 @@ where
     )
     .await?;
 
-    let mut lines = BufReader::new(stdout).lines();
+    let mut lines = HostStdoutLines::spawn(stdout);
     while let Some(line) = lines.next_line().await? {
         if line.trim().is_empty() {
             continue;
@@ -4128,6 +4175,57 @@ fn set_execution_persona_metadata(metadata: &mut Value, persona_id: Option<&str>
     }
 }
 
+/// Python workflow host stdout, read on a dedicated task.
+///
+/// The protocol loop handles one host message at a time and does not read
+/// stdout while it writes a response, but the host keeps writing (its
+/// notifications follow a request immediately). A transport that serves both
+/// directions from one loop through bounded buffers, as a Kubernetes attach
+/// stream does, then blocks on the backed-up stdout and stops delivering the
+/// response the host is waiting for. Draining stdout independently, without
+/// backpressure, breaks that cycle.
+struct HostStdoutLines {
+    lines: mpsc::UnboundedReceiver<std::io::Result<String>>,
+    reader: JoinHandle<()>,
+}
+
+impl HostStdoutLines {
+    fn spawn<R>(stdout: R) -> Self
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+    {
+        let (tx, lines) = mpsc::unbounded_channel();
+        let reader = tokio::spawn(async move {
+            let mut stdout = BufReader::new(stdout).lines();
+            loop {
+                match stdout.next_line().await {
+                    Ok(Some(line)) => {
+                        if tx.send(Ok(line)).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(None) => return,
+                    Err(error) => {
+                        let _ = tx.send(Err(error));
+                        return;
+                    }
+                }
+            }
+        });
+        Self { lines, reader }
+    }
+
+    async fn next_line(&mut self) -> std::io::Result<Option<String>> {
+        self.lines.recv().await.transpose()
+    }
+}
+
+impl Drop for HostStdoutLines {
+    fn drop(&mut self) {
+        self.reader.abort();
+    }
+}
+
 async fn write_host_message<W>(stdin: &mut W, message: &Value) -> Result<(), WorkflowRuntimeError>
 where
     W: AsyncWrite + Unpin,
@@ -4689,6 +4787,116 @@ mod tests {
         );
     }
 
+    /// Model a Kubernetes attach connection the way kube-rs serves one: a
+    /// single loop forwards both directions and blocks while either 1 KiB
+    /// pipe is full.
+    fn spawn_attach_transport(
+        mut from_host: tokio::io::DuplexStream,
+        mut to_host: tokio::io::DuplexStream,
+    ) -> (tokio::io::DuplexStream, tokio::io::DuplexStream) {
+        use tokio::io::AsyncReadExt;
+
+        let (mut stdout_tx, stdout_rx) = tokio::io::duplex(1024);
+        let (stdin_tx, mut stdin_rx) = tokio::io::duplex(1024);
+        tokio::spawn(async move {
+            let mut out = [0_u8; 256];
+            let mut inp = [0_u8; 256];
+            loop {
+                tokio::select! {
+                    read = from_host.read(&mut out) => match read {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => {
+                            if stdout_tx.write_all(&out[..n]).await.is_err() {
+                                return;
+                            }
+                        }
+                    },
+                    read = stdin_rx.read(&mut inp) => match read {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => {
+                            if to_host.write_all(&inp[..n]).await.is_err() {
+                                return;
+                            }
+                        }
+                    },
+                }
+            }
+        });
+        (stdout_rx, stdin_tx)
+    }
+
+    #[tokio::test]
+    async fn host_response_is_delivered_while_host_output_backs_up() {
+        let (mut host_stdout, from_host) = tokio::io::duplex(64 * 1024);
+        let (to_host, host_stdin) = tokio::io::duplex(64 * 1024);
+        let (api_stdout, mut api_stdin) = spawn_attach_transport(from_host, to_host);
+
+        // The host saves a step, then flushes notifications at once, well
+        // past the transport's buffer, before waiting for the response.
+        let value = "v".repeat(8 * 1024);
+        let host = tokio::spawn({
+            let value = value.clone();
+            async move {
+                let request = json!({"type": "ctx.step.put", "request_id": "1", "value": value});
+                write_host_message(&mut host_stdout, &request)
+                    .await
+                    .unwrap();
+                for index in 0..100 {
+                    let log = json!({"type": "ctx.log", "message": "scan_item", "fields": {"index": index}});
+                    write_host_message(&mut host_stdout, &log).await.unwrap();
+                }
+                let mut response = String::new();
+                BufReader::new(host_stdin)
+                    .read_line(&mut response)
+                    .await
+                    .unwrap();
+                (host_stdout, response)
+            }
+        });
+
+        let mut lines = HostStdoutLines::spawn(api_stdout);
+        let request: Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(request["type"], "ctx.step.put");
+        // The response, like a step.put response, is larger than the buffer.
+        let response =
+            json!({"type": "ctx.response", "request_id": "1", "ok": true, "value": value});
+        tokio::time::timeout(Duration::from_secs(5), async {
+            write_host_message(&mut api_stdin, &response).await.unwrap();
+            host.await.unwrap()
+        })
+        .await
+        .map(|(_host_stdout, delivered)| {
+            let delivered: Value = serde_json::from_str(&delivered).unwrap();
+            assert_eq!(delivered, response);
+        })
+        .expect("response was not delivered while host output was backed up");
+
+        let mut notifications = 0;
+        while let Ok(Ok(Some(line))) =
+            tokio::time::timeout(Duration::from_millis(100), lines.next_line()).await
+        {
+            assert!(line.contains("\"ctx.log\""), "{line}");
+            notifications += 1;
+        }
+        assert_eq!(notifications, 100);
+    }
+
+    #[tokio::test]
+    async fn host_stdout_lines_end_at_eof() {
+        let (mut host_stdout, api_stdout) = tokio::io::duplex(1024);
+        host_stdout.write_all(b"{\"a\":1}\npartial").await.unwrap();
+        drop(host_stdout);
+
+        let mut lines = HostStdoutLines::spawn(api_stdout);
+        assert_eq!(
+            lines.next_line().await.unwrap().as_deref(),
+            Some("{\"a\":1}")
+        );
+        assert_eq!(lines.next_line().await.unwrap().as_deref(), Some("partial"));
+        assert_eq!(lines.next_line().await.unwrap(), None);
+    }
+
     #[tokio::test]
     async fn workflow_error_does_not_wait_for_never_closing_stderr() {
         assert_structured_host_error_is_bounded("workflow.error").await;
@@ -5239,11 +5447,19 @@ mod tests {
                     "workflow_name": "manual_workflow",
                     "source_path": "workflows/manual_workflow.py",
                     "principal": "finance-automation",
+                    "starters": ["console"],
                 },
             ],
         }))
         .unwrap();
         let metadata = metadata_from_discovery_payload(payload);
+        assert_eq!(
+            metadata.starters,
+            BTreeMap::from([(
+                "manual_workflow".to_owned(),
+                BTreeSet::from(["console".to_owned()])
+            )])
+        );
         assert_eq!(
             metadata.workflow_names,
             BTreeSet::from([
@@ -5327,6 +5543,22 @@ mod tests {
                 .expect("optional workflow should be allowed"),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn unresolvable_workflow_principal_does_not_fail_registration() {
+        let registrar = WorkflowPrincipalRegistrar::new(IronControlClient::new(
+            "http://127.0.0.1:1",
+            "test-key",
+        ));
+        let registered = registrar
+            .register_workflow_principals(&BTreeMap::from([(
+                "nightly_report".to_owned(),
+                WorkflowPrincipalDeclaration::Existing("missing-principal".to_owned()),
+            )]))
+            .await;
+
+        assert!(registered.is_empty());
     }
 
     #[tokio::test]
