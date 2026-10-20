@@ -1,3 +1,5 @@
+mod calendar;
+mod calendar_tasks;
 mod config;
 mod credentials;
 mod database;
@@ -7,6 +9,7 @@ mod errors;
 mod extraction;
 mod granola;
 mod granola_tasks;
+mod imported_documents;
 mod query;
 mod sampler;
 mod scheduler;
@@ -38,6 +41,7 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use crate::{
+    calendar::CalendarClient,
     config::{Config, QUEUE_NAME, SLACK_QUEUE_NAME, SLACK_THREAD_QUEUE_NAME},
     credentials::ConsoleCredentials,
     drive::DriveClient,
@@ -107,6 +111,7 @@ async fn main() -> Result<()> {
         .context("create company context Slack thread Absurd queue")?;
 
     let drive = DriveClient::new(&config, credentials.clone())?;
+    let calendar = CalendarClient::new(&config, credentials.clone())?;
     let granola = GranolaClient::new(&config)?;
     let embeddings = EmbeddingsClient::new(&config)?;
     let query_state = query::QueryState {
@@ -122,6 +127,7 @@ async fn main() -> Result<()> {
         absurd: absurd.clone(),
         credentials: credentials.clone(),
         drive,
+        calendar,
         granola,
         slack: slack.clone(),
         embeddings,
@@ -210,11 +216,24 @@ async fn main() -> Result<()> {
             credentials.clone(),
         )));
     }
+    if config.calendar_enabled {
+        schedulers.push(tokio::spawn(scheduler::run_calendar(
+            config.clone(),
+            absurd.clone(),
+            credentials.clone(),
+        )));
+    }
     if config.granola_enabled {
         schedulers.push(tokio::spawn(scheduler::run_granola(
             config.clone(),
-            absurd,
+            absurd.clone(),
             credentials.clone(),
+        )));
+    }
+    if config.imported_enabled {
+        schedulers.push(tokio::spawn(scheduler::run_imported(
+            config.clone(),
+            absurd,
         )));
     }
     if config.slack_enabled {
@@ -241,7 +260,9 @@ async fn main() -> Result<()> {
         bind = %config.bind_addr,
         queue = QUEUE_NAME,
         drive_enabled = config.drive_enabled,
+        calendar_enabled = config.calendar_enabled,
         granola_enabled = config.granola_enabled,
+        imported_enabled = config.imported_enabled,
         slack_enabled = config.slack_enabled
     );
     tokio::signal::ctrl_c().await?;

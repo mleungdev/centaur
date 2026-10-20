@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::{
     config::{QUEUE_NAME, SLACK_QUEUE_NAME, SLACK_THREAD_QUEUE_NAME},
-    credentials::ConsoleCredentials,
+    credentials::{ConsoleCredentials, GoogleProduct},
     telemetry,
 };
 
@@ -165,19 +165,29 @@ async fn item_samples(pool: &PgPool) -> Result<Vec<Sample>> {
 /// Checkpoints of dead credentials are kept, so only those of live
 /// credentials count toward freshness.
 async fn freshness_samples(pool: &PgPool, credentials: &ConsoleCredentials) -> Result<Vec<Sample>> {
-    let google = credentials.google_credential_ids().await?;
+    let google = credentials
+        .google_credential_ids(GoogleProduct::Drive)
+        .await?;
+    let calendar = credentials
+        .google_credential_ids(GoogleProduct::Calendar)
+        .await?;
     let granola = credentials.granola_credential_ids().await?;
     let slack = credentials.slack_credential_ids().await?;
-    let mut samples: Vec<Sample> = [("drive", &google), ("granola", &granola), ("slack", &slack)]
-        .into_iter()
-        .map(|(source, ids)| {
-            (
-                telemetry::LIVE_CREDENTIALS,
-                vec![("source", source.to_owned())],
-                ids.len() as f64,
-            )
-        })
-        .collect();
+    let mut samples: Vec<Sample> = [
+        ("drive", &google),
+        ("calendar", &calendar),
+        ("granola", &granola),
+        ("slack", &slack),
+    ]
+    .into_iter()
+    .map(|(source, ids)| {
+        (
+            telemetry::LIVE_CREDENTIALS,
+            vec![("source", source.to_owned())],
+            ids.len() as f64,
+        )
+    })
+    .collect();
     let ids = |ids: &[i64]| ids.iter().map(i64::to_string).collect::<Vec<_>>();
     let rows = sqlx::query(
         r#"
@@ -195,6 +205,13 @@ async fn freshness_samples(pool: &PgPool, credentials: &ConsoleCredentials) -> R
         FROM company_context_system.granola_checkpoints
         WHERE split_part(scope_id, ':broker:', 2) = ANY($2)
         UNION ALL
+        SELECT 'calendar',
+               count(*)::float8,
+               count(*) FILTER (WHERE last_error <> '')::float8,
+               coalesce(extract(epoch FROM now() - min(coalesce(last_success_at, first_seen_at))), 0)::float8
+        FROM company_context_system.google_calendars
+        WHERE broker_credential_id::text = ANY($3)
+        UNION ALL
         SELECT 'slack',
                count(*)::float8,
                count(*) FILTER (WHERE history_last_error <> '')::float8,
@@ -204,6 +221,7 @@ async fn freshness_samples(pool: &PgPool, credentials: &ConsoleCredentials) -> R
     )
     .bind(ids(&google))
     .bind(ids(&granola))
+    .bind(ids(&calendar))
     .fetch_all(pool)
     .await?;
     for row in rows {
